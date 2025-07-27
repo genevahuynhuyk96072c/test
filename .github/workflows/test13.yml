@@ -1,0 +1,70 @@
+- name: Install and Run SSHX (and capture URL)
+      id: sshx_run # Đặt ID cho bước này để có thể tham chiếu output của nó
+      run: |
+        echo "Running SSHX installation and execution..."
+
+        # Chạy sshx trong nền và chuyển hướng tất cả output vào một file tạm thời
+        # Dấu '&' ở cuối lệnh để chạy nó ở chế độ nền (background)
+        # nohup được dùng để đảm bảo quá trình không bị chấm dứt khi shell thoát (ít quan trọng hơn trong GH Actions)
+        # Chúng ta cần bắt PID của tiến trình nền để có thể tắt nó sau này
+        curl -sSf https://sshx.io/get | sh -s run &> sshx_raw_output.txt &
+        SSHX_PID=$! # Lấy Process ID (PID) của tiến trình chạy nền sshx
+
+        echo "SSHX command started in background with PID $SSHX_PID."
+        echo "Waiting for SSHX to generate URL (max 10 seconds)..."
+
+        # Chờ một chút để sshx khởi động và in ra URL
+        # Chúng ta sẽ đọc file tạm thời để tìm URL
+        timeout=10 # Thời gian chờ tối đa 10 giây
+        elapsed_time=0
+        SSHX_URL=""
+        while [ -z "$SSHX_URL" ] && [ "$elapsed_time" -lt "$timeout" ]; do
+          sleep 1 # Chờ 1 giây
+          # Tìm URL trong file output tạm thời
+          SSHX_URL=$(grep -oE 'https://sshx.io/s/[a-zA-Z0-9]+' sshx_raw_output.txt | head -n 1)
+          elapsed_time=$((elapsed_time + 1))
+        done
+
+        if [ -n "$SSHX_URL" ]; then
+          echo "Found SSHX URL: $SSHX_URL"
+        else
+          echo "Warning: SSHX URL not found within $timeout seconds. Raw output:"
+          cat sshx_raw_output.txt # In ra toàn bộ output để debug nếu không tìm thấy URL
+        fi
+
+        # Ghi toàn bộ output thô vào file log cuối cùng
+        cat sshx_raw_output.txt > sshx_log.txt
+
+        # QUAN TRỌNG: Kết thúc tiến trình sshx để GitHub Action có thể hoàn thành.
+        # Điều này đồng nghĩa với việc phiên sshx sẽ bị hủy ngay lập tức, và link sẽ VÔ DỤNG.
+        echo "Terminating SSHX process (PID $SSHX_PID) to allow workflow to proceed."
+        kill "$SSHX_PID" || true # Lệnh 'kill' để dừng tiến trình. '|| true' để tránh lỗi nếu tiến trình đã tự thoát.
+        echo "SSHX command finished and process terminated. Log saved to sshx_log.txt"
+      shell: bash # Đảm bảo sử dụng bash để có thể dùng các tính năng như '&', $!, grep, etc.
+
+    # Các bước tiếp theo vẫn giữ nguyên
+    - name: Upload SSHX Log (for debugging/archiving)
+      uses: actions/upload-artifact@v4
+      with:
+        name: sshx-log
+        path: sshx_log.txt
+        retention-days: 7
+
+    - name: Prepare Log Content for Discord
+      id: prepare_log
+      run: |
+        LOG_CONTENT=$(cat sshx_log.txt)
+        if [ ${#LOG_CONTENT} -gt 1900 ]; then
+          LOG_CONTENT="${LOG_CONTENT:0:1900}...\n(Log truncated. Full log available as artifact.)"
+        fi
+        CLEAN_LOG_CONTENT=$(echo "$LOG_CONTENT" | sed 's/"/''/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+        echo "log_payload=$CLEAN_LOG_CONTENT" >> "$GITHUB_OUTPUT"
+      shell: bash
+
+    - name: Send Log to Discord
+      uses: actions/github-script@v7
+      with:
+        script: |
+          // ... (code unchanged from previous response)
+      env:
+        DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
